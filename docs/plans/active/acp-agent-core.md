@@ -292,8 +292,88 @@ Code's own CLI handles login out-of-band).
 
 ## Progress
 
-Not started.
+Complete. Implemented across the root `package acp`:
+
+- `types.go` — `RequestID` (comparable value type: null/int64/number-text/string,
+  exact wire round-trip), JSON-RPC envelopes, all ACP wire types for AC 1-19.
+  Tagged unions (`McpServer`, `ContentBlock`, `SessionUpdate`, `ToolCallContent`,
+  `RequestPermissionOutcome`) are pointer-field wrapper structs with custom
+  marshal/unmarshal; `McpServer.MarshalJSON` forces the `type` discriminator
+  from the Go-side variant (a Go-constructed `McpServerHTTP` without `Type`
+  set still marshals as `"type":"http"`, so test/wire round-trips agree).
+- `transport.go` — `Connection`: single reader goroutine over NDJSON,
+  mutex-guarded writes (concurrent outbound requests safe), pending-map
+  keyed by `RequestID`, inbound request handlers run per-request goroutines,
+  notifications dispatched synchronously in the reader goroutine (preserves
+  `session/update` wire ordering for clients), unknown method → `-32601`,
+  malformed line skipped without killing the connection.
+- `agent.go` — `Agent`: `initialize` / `session/new` / `session/prompt` /
+  `session/cancel` handlers; per-session turn context (canceled by
+  `session/cancel`) + cancelled flag; sessions closed on connection end
+  (`Agent.closeAll`, awaited via `Agent.Closed()`).
+- `translate.go` — SDK message → `session/update` translation with
+  mutex-guarded per-session tool-call title/kind state (written from the
+  message-draining goroutine, read from the SDK's `can_use_tool` handler
+  goroutine). ToolKind mapping and title derivation per AC 16.
+- `permission.go` — `acpPermissionPolicy`: sends `session/request_permission`
+  (binary allow/deny options), round trip scoped to both the caller's and the
+  session's turn context so `session/cancel` resolves it (AC 12/18).
+- `cmd/claude-code-acp/main.go` — thin binary entrypoint over `acp.Run`.
+- Tests: two-layer harness (fake ACP client over `io.Pipe` ↔ Agent ↔ fake
+  `claude` CLI via test-binary re-exec, `WithCLIPath` + `WithEnv`), covering
+  every Test Scenario below.
+
+Go-side deviations from the plan doc (wire shape unchanged):
+
+- `RequestID` is a comparable struct (kind + fields), not `json.RawMessage` —
+  needed to key the pending-response map by value.
+- SDK messages arrive as value types (`AssistantMessage`, not
+  `*AssistantMessage`); translation type-switches on values.
+- `tool_call_update` carries optional `title`/`kind` fields (in the ACP
+  schema) so permission requests reuse AC 15 metadata without extra state.
+- StopReason mapping (AC 11 heuristic, documented): cancelled flag →
+  `cancelled`; `PermissionDenials` non-empty or `StopReason=="refusal"` →
+  `refusal`; `TerminalReason`/`StopReason` indicates turn limit →
+  `max_turn_requests`; else `end_turn`.
 
 ## Validation
 
-Not yet applicable.
+All of `go build -buildvcs=false ./...`, `go vet ./...`, `gofmt -l .`,
+`golangci-lint run` (0 issues), and `go test -race -count=1 ./...` clean;
+zero leaked fake-CLI processes after runs (verified via `ps`). The previously
+flaky `TestToolCallTranslationSequence` passed 20/20 with `-race -count=20`;
+full suite passed 3/3 consecutive runs.
+
+AC → test mapping:
+
+- AC 1-2: `TestTransportRequestResponseCorrelation`,
+  `TestTransportStringIDCorrelation`, `TestRequestIDRoundTrip`.
+- AC 3: `TestConcurrentOutboundCalls` (8 concurrent calls, out-of-order
+  responses, correct correlation).
+- AC 4: `TestTransportUnrecognizedMethod` (-32601),
+  `TestTransportMalformedLineDoesNotKillConnection`.
+- AC 5: `TestTransportRequestResponseCorrelation` (asserts protocolVersion 1,
+  empty authMethods, text-only prompt capabilities, no http/sse MCP).
+- AC 6-7: `TestSessionLifecycleEndToEnd`, `TestSessionNewStdioMCPServer`,
+  `TestSessionNewHTTPMCPServerRejected` (-32602).
+- AC 8: New() failure path covered indirectly (error mapping code in
+  `handleNewSession`); CLINotFound/CLIConnectionError surface as -32603.
+- AC 9-10: `TestSessionLifecycleEndToEnd` (prompt → streamed updates →
+  end_turn response after terminal message),
+  `TestContentBlockRejectsNonText` (invalid_params path).
+- AC 11: `TestSessionLifecycleEndToEnd` (end_turn),
+  `TestSessionCancelMidTurn` (cancelled), `TestPermissionDenyFlow`
+  (refusal via PermissionDenials).
+- AC 12-13: `TestSessionCancelMidTurn`, `TestSessionCancelPendingPermission`
+  (pending permission resolved by cancel, prompt returns cancelled).
+- AC 14: `$/cancel_request` is not registered; connection ignores it like any
+  unknown notification (no response, per JSON-RPC).
+- AC 15: `TestToolCallTranslationSequence` (pending → in_progress →
+  completed with content, asserted in order), `TestToolCallFailedStatus`
+  (failed), `TestThinkingBlockBecomesAgentThoughtChunk`,
+  `TestSessionUpdateMarshalRoundTrip`.
+- AC 16: `TestMapToolKind` (full table incl. `mcp__myserver__mytool` → other),
+  title assertions in `TestToolCallTranslationSequence`.
+- AC 17-19: `TestPermissionAllowFlow` (request shape, binary options, tool
+  completes), `TestPermissionDenyFlow`, `TestSessionCancelPendingPermission`,
+  `TestConcurrentOutboundCalls`.
