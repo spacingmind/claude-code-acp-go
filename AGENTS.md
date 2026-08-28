@@ -42,9 +42,17 @@ ask rather than deciding unilaterally.
 
 - `main` is release-only. Do not commit or push directly to `main`.
 - `develop` is the integration branch. Feature/fix work happens on
-  short-lived branches off `develop`, merged back via PR.
-- Releasing means opening a PR from `develop` into `main`. Merging that PR
-  triggers everything downstream:
+  short-lived branches off `develop`, merged back via PR (squash-merge is
+  fine here, and is the default).
+- **Releasing means opening a PR from `develop` into `main`, merged with
+  "Create a merge commit" -- NOT squash.** Squash-merging `develop` into
+  `main` severs ancestry (the resulting commit on `main` has no shared
+  history with `develop`'s tip), so the next `develop`->`main` merge
+  computes a stale `merge-base` and produces spurious conflicts on any
+  line both branches touched since (e.g. `go.mod`'s dependency version)
+  even when the content isn't actually in conflict. A real merge commit
+  keeps `main` a true descendant of `develop`, so this class of conflict
+  can't recur. Merging that PR triggers everything downstream:
   1. `.github/workflows/release-please.yml` (on push to `main`) runs
      [release-please](https://github.com/googleapis/release-please),
      which reads Conventional Commits since the last release and either
