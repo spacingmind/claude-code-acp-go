@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/spacingmind/claude-code-acp-go/compare/v0.1.1...v0.1.2) (2026-08-28)
+
+
+### Bug Fixes
+
+* run goreleaser via release-please's release_created output ([#10](https://github.com/spacingmind/claude-code-acp-go/issues/10)) ([54e4f60](https://github.com/spacingmind/claude-code-acp-go/commit/54e4f60d8daf9e2b0ac20f2618f885d96ed1bacf))
+
 ## [0.1.1](https://github.com/spacingmind/claude-code-acp-go/compare/v0.1.0...v0.1.1) (2026-08-28)
 
 
