@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/spacingmind/claude-code-acp-go/compare/v0.1.2...v0.1.3) (2026-08-28)
+
+
+### Bug Fixes
+
+* goreleaser changelog exclude filters ignore commit scopes ([#13](https://github.com/spacingmind/claude-code-acp-go/issues/13)) ([4a1b16a](https://github.com/spacingmind/claude-code-acp-go/commit/4a1b16ac34da94073677b07d332dbe89cddd1416))
+
 ## [0.1.2](https://github.com/spacingmind/claude-code-acp-go/compare/v0.1.1...v0.1.2) (2026-08-28)
 
 
