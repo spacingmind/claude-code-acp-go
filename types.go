@@ -289,8 +289,84 @@ type NewSessionRequest struct {
 
 // NewSessionResponse carries the newly created opaque session ID.
 type NewSessionResponse struct {
-	SessionID string `json:"sessionId"`
+	SessionID string            `json:"sessionId"`
+	Modes     *SessionModeState `json:"modes,omitempty"`
 }
+
+// --- session modes ---
+
+// SessionMode is one selectable agent permission mode.
+type SessionMode struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// SessionModeState reports a session's current mode and the fixed set of modes it accepts.
+type SessionModeState struct {
+	CurrentModeID  string        `json:"currentModeId"`
+	AvailableModes []SessionMode `json:"availableModes"`
+}
+
+// --- session/load, session/resume ---
+
+// LoadSessionRequest loads an existing local session, replaying its history.
+type LoadSessionRequest struct {
+	SessionID  string      `json:"sessionId"`
+	CWD        string      `json:"cwd"`
+	McpServers []McpServer `json:"mcpServers"`
+}
+
+// LoadSessionResponse concludes session/load.
+type LoadSessionResponse struct {
+	Modes *SessionModeState `json:"modes,omitempty"`
+}
+
+// ResumeSessionRequest resumes an existing local session without history replay.
+type ResumeSessionRequest struct {
+	SessionID      string      `json:"sessionId"`
+	CWD            string      `json:"cwd"`
+	AdditionalDirs []string    `json:"additionalDirectories,omitempty"`
+	McpServers     []McpServer `json:"mcpServers"`
+}
+
+// ResumeSessionResponse concludes session/resume.
+type ResumeSessionResponse struct {
+	Modes *SessionModeState `json:"modes,omitempty"`
+}
+
+// --- session/list ---
+
+// ListSessionsRequest lists stored sessions, optionally scoped to a project directory.
+type ListSessionsRequest struct {
+	CWD    string `json:"cwd,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
+}
+
+// SessionInfo describes one stored session.
+type SessionInfo struct {
+	SessionID string  `json:"sessionId"`
+	CWD       string  `json:"cwd"`
+	Title     *string `json:"title,omitempty"`
+	UpdatedAt *string `json:"updatedAt,omitempty"`
+}
+
+// ListSessionsResponse concludes session/list. This phase never paginates,
+// so NextCursor is always nil.
+type ListSessionsResponse struct {
+	Sessions   []SessionInfo `json:"sessions"`
+	NextCursor *string       `json:"nextCursor,omitempty"`
+}
+
+// --- session/set_mode ---
+
+// SetSessionModeRequest switches a session's permission mode.
+type SetSessionModeRequest struct {
+	SessionID string `json:"sessionId"`
+	ModeID    string `json:"modeId"`
+}
+
+// SetSessionModeResponse concludes session/set_mode; always empty.
+type SetSessionModeResponse struct{}
 
 // --- session/prompt ---
 
@@ -387,6 +463,12 @@ type SessionUpdate struct {
 	UserMessageChunk  *ContentChunk
 	ToolCall          *ToolCall
 	ToolCallUpdate    *ToolCallUpdate
+	CurrentModeUpdate *CurrentModeUpdate
+}
+
+// CurrentModeUpdate announces the session's current mode (e.g. after session/set_mode).
+type CurrentModeUpdate struct {
+	CurrentModeID string `json:"currentModeId"`
 }
 
 // ContentChunk wraps one content block streamed as a message or thought chunk.
@@ -497,6 +579,8 @@ func (u SessionUpdate) MarshalJSON() ([]byte, error) {
 		variant, value = "tool_call", u.ToolCall
 	case u.ToolCallUpdate != nil:
 		variant, value = "tool_call_update", u.ToolCallUpdate
+	case u.CurrentModeUpdate != nil:
+		variant, value = "current_mode_update", u.CurrentModeUpdate
 	default:
 		return nil, errors.New("acp: empty session update")
 	}
@@ -580,6 +664,13 @@ func (u *SessionUpdate) UnmarshalJSON(data []byte) error {
 		}
 
 		u.ToolCallUpdate = &v
+	case "current_mode_update":
+		var v CurrentModeUpdate
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return err
+		}
+
+		u.CurrentModeUpdate = &v
 	default:
 		return fmt.Errorf("acp: unknown sessionUpdate variant %q", variant)
 	}

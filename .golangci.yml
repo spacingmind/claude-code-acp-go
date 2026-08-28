@@ -121,9 +121,10 @@ linters:
           - funlen
       # Test fixtures deliberately use permissive permissions to exercise
       # the local session store; they create no real attack surface.
+      # G304/G703: tests read/write fixture paths under t.TempDir() only.
       - path: _test\.go
         linters: [gosec]
-        text: "G301|G306"
+        text: "G301|G306|G304|G703"
 
   settings:
     dupl:

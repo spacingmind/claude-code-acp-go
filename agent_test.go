@@ -68,7 +68,7 @@ func TestTransportStringIDCorrelation(t *testing.T) {
 func TestTransportUnrecognizedMethod(t *testing.T) {
 	h := newACPHarness(t, fakeCLIOptions(t, "simple"))
 
-	resp, err := h.call(7, "session/load", map[string]any{})
+	resp, err := h.call(7, "session/definitely/not/a/method", map[string]any{})
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
@@ -525,7 +525,7 @@ func TestSessionCancelMidTurn(t *testing.T) {
 
 	// Wait for the first streamed update, then cancel.
 	h.waitForUpdates(ns.SessionID, 1)
-	h.notify(MethodCancel, CancelNotification(ns))
+	h.notify(MethodCancel, CancelNotification{SessionID: ns.SessionID})
 
 	select {
 	case r := <-ch:
@@ -587,7 +587,7 @@ func TestSessionCancelPendingPermission(t *testing.T) {
 		t.Fatal("permission request never arrived")
 	}
 
-	h.notify(MethodCancel, CancelNotification(ns))
+	h.notify(MethodCancel, CancelNotification{SessionID: ns.SessionID})
 
 	select {
 	case r := <-ch:

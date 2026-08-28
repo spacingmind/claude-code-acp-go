@@ -247,3 +247,112 @@ func toolResultContent(raw json.RawMessage) []ToolCallContent {
 
 	return []ToolCallContent{{Text: &TextContent{Type: contentTypeText, Text: string(raw)}}}
 }
+
+// replayHistory translates stored-session messages (raw Anthropic API
+// message objects, not live claudecode.Messages) into ACP session/update
+// values for session/load's history replay (AC 4). Fidelity judgment call:
+// historical tool_use blocks are rendered as plain agent-message text
+// describing the call ("[tool: Bash go test ./...]"), NOT re-announced as
+// live tool_call/tool_call_update sequences — they already happened, and
+// the client-side tool-call UI belongs to the current turn only. Tool
+// results and thinking blocks from history are skipped (thinking is
+// signed/transient, tool results are meaningless without the live call).
+func replayHistory(messages []claudecode.SessionMessage, tools *toolCallState) []SessionUpdate {
+	var out []SessionUpdate
+
+	for _, m := range messages {
+		var msg struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		}
+		if err := json.Unmarshal(m.Message, &msg); err != nil {
+			continue
+		}
+
+		if msg.Role == "user" {
+			for _, text := range historyTextBlocks(msg.Content) {
+				out = append(out, SessionUpdate{UserMessageChunk: &ContentChunk{
+					Content: ContentBlock{Text: &TextContent{Type: contentTypeText, Text: text}},
+				}})
+			}
+
+			continue
+		}
+
+		for _, text := range historyTextBlocks(msg.Content) {
+			out = append(out, SessionUpdate{AgentMessageChunk: &ContentChunk{
+				Content: ContentBlock{Text: &TextContent{Type: contentTypeText, Text: text}},
+			}})
+		}
+
+		out = append(out, historyToolUseSummaries(msg.Content, tools)...)
+	}
+
+	return out
+}
+
+// historyTextBlocks extracts the text blocks from a raw content array (or
+// bare string content).
+func historyTextBlocks(content json.RawMessage) []string {
+	if len(content) == 0 {
+		return nil
+	}
+
+	var s string
+	if err := json.Unmarshal(content, &s); err == nil {
+		if s != "" {
+			return []string{s}
+		}
+
+		return nil
+	}
+
+	var arr []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(content, &arr); err != nil {
+		return nil
+	}
+
+	var out []string
+
+	for _, b := range arr {
+		if b.Type == contentTypeText && b.Text != "" {
+			out = append(out, b.Text)
+		}
+	}
+
+	return out
+}
+
+// historyToolUseSummaries renders historical tool_use blocks as plain
+// agent-message chunks describing each call.
+func historyToolUseSummaries(content json.RawMessage, tools *toolCallState) []SessionUpdate {
+	var arr []struct {
+		Type  string         `json:"type"`
+		ID    string         `json:"id"`
+		Name  string         `json:"name"`
+		Input map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(content, &arr); err != nil {
+		return nil
+	}
+
+	var out []SessionUpdate
+
+	for _, b := range arr {
+		if b.Type != "tool_use" {
+			continue
+		}
+
+		title := toolTitle(b.Name, b.Input)
+		tools.remember(b.ID, title, mapToolKind(b.Name))
+
+		out = append(out, SessionUpdate{AgentMessageChunk: &ContentChunk{
+			Content: ContentBlock{Text: &TextContent{Type: contentTypeText, Text: "[tool: " + title + "]"}},
+		}})
+	}
+
+	return out
+}

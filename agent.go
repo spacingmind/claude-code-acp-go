@@ -24,6 +24,10 @@ import (
 const (
 	MethodInitialize        = "initialize"
 	MethodNewSession        = "session/new"
+	MethodLoadSession       = "session/load"
+	MethodResumeSession     = "session/resume"
+	MethodListSessions      = "session/list"
+	MethodSetSessionMode    = "session/set_mode"
 	MethodPrompt            = "session/prompt"
 	MethodCancel            = "session/cancel"
 	MethodSessionUpdate     = "session/update"
@@ -35,10 +39,11 @@ type session struct {
 	client *claudecode.Client
 	tools  *toolCallState
 
-	mu         sync.Mutex
-	cancelled  bool            // current turn cancelled via session/cancel (AC 13)
-	turnCtx    context.Context //nolint:containedctx  // per-turn cancel basis, cancelled by session/cancel
-	turnCancel context.CancelFunc
+	mu          sync.Mutex
+	currentMode string          // current permission mode ID (AC 13)
+	cancelled   bool            // current turn cancelled via session/cancel (AC 13)
+	turnCtx     context.Context //nolint:containedctx  // per-turn cancel basis, cancelled by session/cancel
+	turnCancel  context.CancelFunc
 }
 
 // beginTurn resets per-turn state and installs the turn's context; the
@@ -89,6 +94,24 @@ func (s *session) setCancelled(v bool) {
 	s.cancelled = v
 }
 
+func (s *session) mode() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.currentMode == "" {
+		return "default"
+	}
+
+	return s.currentMode
+}
+
+func (s *session) setMode(m string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.currentMode = m
+}
+
 // cancelTurn cancels the current turn's context, unblocking anything
 // scoped to it (e.g. a pending session/request_permission round trip).
 func (s *session) cancelTurn() {
@@ -126,6 +149,10 @@ func NewAgent(conn *Connection, clientOpts ...claudecode.Option) *Agent {
 	conn.RegisterRequest(MethodInitialize, a.handleInitialize)
 	conn.RegisterRequest(MethodNewSession, a.handleNewSession)
 	conn.RegisterRequest(MethodPrompt, a.handlePrompt)
+	conn.RegisterRequest(MethodLoadSession, a.handleLoadSession)
+	conn.RegisterRequest(MethodResumeSession, a.handleResumeSession)
+	conn.RegisterRequest(MethodListSessions, a.handleListSessions)
+	conn.RegisterRequest(MethodSetSessionMode, a.handleSetSessionMode)
 
 	conn.RegisterNotification(MethodCancel, a.handleCancel)
 	go func() {
@@ -163,10 +190,10 @@ func (a *Agent) handleInitialize(_ context.Context, _ json.RawMessage) (any, err
 	return InitializeResponse{
 		ProtocolVersion: 1,
 		AgentCapabilities: AgentCapabilities{
-			LoadSession:         false,
+			LoadSession:         true,
 			PromptCapabilities:  PromptCapabilities{Image: false, Audio: false, EmbeddedContext: false},
 			McpCapabilities:     McpCapabilities{HTTP: false, SSE: false},
-			SessionCapabilities: SessionCapabilities{},
+			SessionCapabilities: SessionCapabilities{List: true, Resume: true},
 		},
 		AuthMethods: []json.RawMessage{},
 	}, nil
@@ -178,16 +205,30 @@ func (a *Agent) handleNewSession(_ context.Context, params json.RawMessage) (any
 		return nil, &RequestError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid session/new params: %v", err)}
 	}
 
-	if req.CWD == "" {
-		return nil, &RequestError{Code: CodeInvalidParams, Message: "session/new: cwd is required"}
+	bound, err := a.newSessionClient(req.CWD, newSessionID(), req.McpServers, nil)
+	if err != nil {
+		return nil, err
 	}
 
-	var opts []claudecode.Option
+	return NewSessionResponse{SessionID: bound.id, Modes: availableModes(bound.sess.mode())}, nil
+}
 
+// newSessionClient builds the SDK Client (and its ACP bookkeeping) shared
+// by session/new, session/load, and session/resume: client options,
+// stdio-only MCP-server validation, permission-policy wiring, and
+// session-map registration. extraOpts carries construction-time extras
+// (WithResume for load/resume).
+func (a *Agent) newSessionClient(cwd, sessionID string, mcpServers []McpServer, extraOpts []claudecode.Option) (*boundSession, error) {
+	if cwd == "" {
+		return nil, &RequestError{Code: CodeInvalidParams, Message: "cwd is required"}
+	}
+
+	opts := make([]claudecode.Option, 0, len(a.clientOpts)+len(extraOpts)+2)
 	opts = append(opts, a.clientOpts...)
+	opts = append(opts, extraOpts...)
 
-	if len(req.McpServers) > 0 {
-		config, err := mcpConfigJSON(req.McpServers)
+	if len(mcpServers) > 0 {
+		config, err := mcpConfigJSON(mcpServers)
 		if err != nil {
 			return nil, err
 		}
@@ -195,14 +236,13 @@ func (a *Agent) handleNewSession(_ context.Context, params json.RawMessage) (any
 		opts = append(opts, claudecode.WithMCPConfig(config))
 	}
 
-	sessionID := newSessionID()
 	sess := &session{tools: newToolCallState()}
 
 	opts = append(opts, claudecode.WithPermissionPolicy(&acpPermissionPolicy{
 		agent: a, sessionID: sessionID, session: sess,
 	}))
 
-	client, err := claudecode.New(req.CWD, opts...)
+	client, err := claudecode.New(cwd, opts...)
 	if err != nil {
 		return nil, &RequestError{Code: CodeInternalError, Message: fmt.Sprintf("failed to start claude code: %v", err)}
 	}
@@ -213,7 +253,27 @@ func (a *Agent) handleNewSession(_ context.Context, params json.RawMessage) (any
 	a.sessions[sessionID] = sess
 	a.mu.Unlock()
 
-	return NewSessionResponse{SessionID: sessionID}, nil
+	return &boundSession{id: sessionID, sess: sess}, nil
+}
+
+// boundSession pairs a registered session ID with its session state.
+type boundSession struct {
+	id   string
+	sess *session
+}
+
+// availableModes builds the fixed-mode SessionModeState every session-opening
+// response carries (AC 2).
+func availableModes(current string) *SessionModeState {
+	return &SessionModeState{
+		CurrentModeID: current,
+		AvailableModes: []SessionMode{
+			{ID: "default", Name: "Default"},
+			{ID: "acceptEdits", Name: "Accept Edits"},
+			{ID: "bypassPermissions", Name: "Bypass Permissions"},
+			{ID: "plan", Name: "Plan"},
+		},
+	}
 }
 
 // mcpConfigJSON builds the --mcp-config JSON blob from the ACP server
@@ -399,6 +459,169 @@ func (a *Agent) handleCancel(ctx context.Context, params json.RawMessage) {
 
 	if err := sess.client.Interrupt(ctx); err != nil {
 		log.Printf("acp: interrupt session %s: %v", n.SessionID, err)
+	}
+}
+
+// handleLoadSession implements session/load (AC 3-6): construct a Client
+// with WithResume, replay the stored history as session/update
+// notifications BEFORE responding, then register in the session map.
+func (a *Agent) handleLoadSession(_ context.Context, params json.RawMessage) (any, error) {
+	var req LoadSessionRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, &RequestError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid session/load params: %v", err)}
+	}
+
+	if req.SessionID == "" {
+		return nil, &RequestError{Code: CodeInvalidParams, Message: "session/load: sessionId is required"}
+	}
+
+	if len(req.McpServers) > 0 {
+		if _, err := mcpConfigJSON(req.McpServers); err != nil {
+			return nil, err
+		}
+	}
+
+	messages, err := claudecode.GetSessionMessages(req.SessionID, req.CWD, 0, 0)
+	if err != nil || len(messages) == 0 {
+		return nil, &RequestError{Code: CodeResourceNotFound, Message: "session not found: " + req.SessionID}
+	}
+
+	bound, err := a.newSessionClient(req.CWD, req.SessionID, req.McpServers, []claudecode.Option{claudecode.WithResume(req.SessionID)})
+	if err != nil {
+		return nil, err
+	}
+
+	for _, u := range replayHistory(messages, bound.sess.tools) {
+		if err := a.conn.Notify(MethodSessionUpdate, SessionNotification{SessionID: req.SessionID, Update: u}); err != nil {
+			log.Printf("acp: session/update notify: %v", err)
+		}
+	}
+
+	return LoadSessionResponse{Modes: availableModes(bound.sess.mode())}, nil
+}
+
+// handleResumeSession implements session/resume (AC 7-8): same Client
+// construction as session/load but NO history replay, per the ACP spec's
+// explicit load/resume distinction. additionalDirectories is accepted but
+// a no-op: no SDK option consumes it in this phase.
+func (a *Agent) handleResumeSession(_ context.Context, params json.RawMessage) (any, error) {
+	var req ResumeSessionRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, &RequestError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid session/resume params: %v", err)}
+	}
+
+	if req.SessionID == "" {
+		return nil, &RequestError{Code: CodeInvalidParams, Message: "session/resume: sessionId is required"}
+	}
+
+	if len(req.McpServers) > 0 {
+		if _, err := mcpConfigJSON(req.McpServers); err != nil {
+			return nil, err
+		}
+	}
+
+	messages, err := claudecode.GetSessionMessages(req.SessionID, req.CWD, 0, 0)
+	if err != nil || len(messages) == 0 {
+		return nil, &RequestError{Code: CodeResourceNotFound, Message: "session not found: " + req.SessionID}
+	}
+
+	bound, err := a.newSessionClient(req.CWD, req.SessionID, req.McpServers, []claudecode.Option{claudecode.WithResume(req.SessionID)})
+	if err != nil {
+		return nil, err
+	}
+
+	return ResumeSessionResponse{Modes: availableModes(bound.sess.mode())}, nil
+}
+
+// handleListSessions implements session/list (AC 9-10). No pagination this
+// phase: cursor is accepted and ignored, nextCursor never returned.
+func (a *Agent) handleListSessions(_ context.Context, params json.RawMessage) (any, error) {
+	var req ListSessionsRequest
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, &RequestError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid session/list params: %v", err)}
+		}
+	}
+
+	infos, err := claudecode.ListSessions(claudecode.ListSessionsOptions{Directory: req.CWD})
+	if err != nil {
+		return nil, &RequestError{Code: CodeInternalError, Message: fmt.Sprintf("failed to list sessions: %v", err)}
+	}
+
+	sessions := make([]SessionInfo, 0, len(infos))
+	for _, info := range infos {
+		cwd := info.Cwd
+		if cwd == "" {
+			// ACP requires cwd; fall back to the request's cwd, and skip
+			// the session entirely if neither is usable (documented choice
+			// per AC 10).
+			cwd = req.CWD
+			if cwd == "" {
+				continue
+			}
+		}
+
+		si := SessionInfo{SessionID: info.SessionID, CWD: cwd}
+
+		title := info.CustomTitle
+		if title == "" {
+			title = info.Summary
+		}
+
+		if title != "" {
+			si.Title = &title
+		}
+
+		if info.LastModified > 0 {
+			updated := time.UnixMilli(info.LastModified).UTC().Format("2006-01-02T15:04:05.000Z")
+			si.UpdatedAt = &updated
+		}
+
+		sessions = append(sessions, si)
+	}
+
+	return ListSessionsResponse{Sessions: sessions}, nil
+}
+
+// handleSetSessionMode implements session/set_mode (AC 11-13).
+func (a *Agent) handleSetSessionMode(ctx context.Context, params json.RawMessage) (any, error) {
+	var req SetSessionModeRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, &RequestError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid session/set_mode params: %v", err)}
+	}
+
+	sess, err := a.lookupSession(req.SessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	if !validModeID(req.ModeID) {
+		return nil, &RequestError{Code: CodeInvalidParams, Message: "session/set_mode: unknown modeId: " + req.ModeID}
+	}
+
+	if err := sess.client.SetPermissionMode(ctx, req.ModeID); err != nil {
+		return nil, &RequestError{Code: CodeInternalError, Message: fmt.Sprintf("failed to set permission mode: %v", err)}
+	}
+
+	sess.setMode(req.ModeID)
+
+	if err := a.conn.Notify(MethodSessionUpdate, SessionNotification{
+		SessionID: req.SessionID,
+		Update:    SessionUpdate{CurrentModeUpdate: &CurrentModeUpdate{CurrentModeID: req.ModeID}},
+	}); err != nil {
+		log.Printf("acp: session/update notify: %v", err)
+	}
+
+	return SetSessionModeResponse{}, nil
+}
+
+// validModeID reports whether modeID is one of the fixed 4 modes.
+func validModeID(modeID string) bool {
+	switch modeID {
+	case "default", "acceptEdits", "bypassPermissions", "plan":
+		return true
+	default:
+		return false
 	}
 }
 

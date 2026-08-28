@@ -406,6 +406,38 @@ func runFakeCLI() {
 
 		result(map[string]any{"stop_reason": "interrupted", "result": "interrupted"})
 
+	case "await_control":
+		// Ack initialize, then answer every control_request and stay alive
+		// until stdin closes; records the latest set_permission_mode value
+		// to $ACP_FAKE_MODE_FILE for the test to assert on.
+		ackInitialize()
+
+		for stdin.Scan() {
+			var env struct {
+				Type      string          `json:"type"`
+				RequestID string          `json:"request_id"`
+				Request   json.RawMessage `json:"request"`
+			}
+			if err := json.Unmarshal(stdin.Bytes(), &env); err != nil || env.Type != "control_request" {
+				continue
+			}
+
+			var inner struct {
+				Subtype string `json:"subtype"`
+				Mode    string `json:"mode"`
+			}
+
+			_ = json.Unmarshal(env.Request, &inner)
+
+			if inner.Subtype == "set_permission_mode" {
+				if path := os.Getenv("ACP_FAKE_MODE_FILE"); path != "" {
+					_ = os.WriteFile(path, []byte(inner.Mode), 0o644)
+				}
+			}
+
+			controlResponse(env.RequestID, map[string]any{})
+		}
+
 	default:
 		panic("fake cli: unknown scenario " + scenario)
 	}

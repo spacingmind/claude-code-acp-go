@@ -170,8 +170,87 @@ no new schema research needed, just implementation.
 
 ## Progress
 
-Not started.
+Complete. Implemented on `main`:
+
+- **AC 1-2** (`types.go`, `agent.go`): `initialize` now reports
+  `LoadSession: true` and `SessionCapabilities{List: true, Resume: true}`;
+  `SessionModeState` + fixed 4-mode `availableModes()` helper added and
+  wired into `session/new`/`session/load`/`session/resume` responses.
+- **AC 3-6** (`agent.go` `handleLoadSession`, `translate.go`
+  `replayHistory`): existence check via `GetSessionMessages` first
+  (empty/error → `-32002`), then `Client` built via the shared
+  `newSessionClient` helper (factored out of `session/new`, carrying the
+  stdio-only MCP validation) with `WithResume(sessionId)`, history
+  replayed as `session/update` notifications before responding, session
+  registered in the shared map.
+- **AC 4 fidelity call (deviation documented):** historical `tool_use`
+  blocks are replayed as plain agent-message text chunks
+  (`[tool: <title>]`) using the existing `toolTitle` logic — chosen over
+  re-announcing live `tool_call`/`tool_call_update` sequences because the
+  calls already completed and the ACP tool-call UI belongs to the current
+  turn. Tool results and thinking blocks are skipped. The choice is
+  documented in `replayHistory`'s doc comment.
+- **AC 7-8** (`handleResumeSession`): same construction/validation/
+  existence check, no replay; `additionalDirectories` accepted as a
+  no-op (noted in a comment).
+- **AC 9-10** (`handleListSessions`): `cursor` accepted and ignored,
+  `nextCursor` never set; `SDKSessionInfo` → `SessionInfo` translation
+  with `CWD` required-field fallback (SDK cwd → request cwd → session
+  omitted) and `Title` derivation (CustomTitle → Summary → omitted);
+  `UpdatedAt` rendered as ISO-8601 UTC from `LastModified` epoch ms.
+- **AC 11-13** (`handleSetSessionMode`): fixed 4-mode validation,
+  `Client.SetPermissionMode`, `current_mode_update` notification, empty
+  `SetSessionModeResponse{}`; current mode tracked on the `session`
+  struct behind its existing mutex.
+- **Types** (`types.go`): `SessionMode`, `SessionModeState`,
+  `LoadSessionRequest/Response`, `ResumeSessionRequest/Response`,
+  `ListSessionsRequest/Response`, `SessionInfo`,
+  `SetSessionModeRequest/Response`, and the `CurrentModeUpdate` variant
+  added to the `SessionUpdate` tagged union following the existing
+  marshal/unmarshal pattern.
+- **Tests** (`lifecycle_test.go`): fixture helpers writing `.jsonl`
+  session transcripts under a temp `$CLAUDE_CONFIG_DIR` (via `t.Setenv`
+  — the SDK re-reads the env var per call, so no test hook needed),
+  mirroring `claude-agent-sdk-go`'s `sessions_test.go` patterns; fake-CLI
+  gained an `await_control` scenario that records received
+  `set_permission_mode` control requests to a file for wire-level
+  assertion. One pre-existing test updated: phase 1's
+  `TestTransportUnrecognizedMethod` used `session/load` as its
+  not-yet-registered example method.
 
 ## Validation
 
-Not yet applicable.
+All commands run on the final tree:
+
+- `go build -buildvcs=false ./...` — clean.
+- `go test -race -count=1 -timeout 300s ./...` — `ok` (13.1s); full
+  suite run 3 consecutive times, all green, no flakes.
+- `go vet ./...` — clean.
+- `gofmt -l .` — empty.
+- `golangci-lint run` — 0 issues (two exclusions widened in
+  `.golangci.yml`: gosec G304/G703 for `_test.go` fixture paths under
+  `t.TempDir()`, alongside the pre-existing G301/G306 exclusion).
+- Zero leaked fake-CLI processes after the suite (`pgrep` clean).
+
+Every Test Scenario in the plan is covered:
+
+1. `TestInitializeCapabilitiesPhase2` — LoadSession +
+   SessionCapabilities{List, Resume}.
+2. `TestNewSessionModes` — Modes with CurrentModeID `default` + 4 fixed
+   AvailableModes.
+3. `TestSessionLoadReplaysHistory` — replay notifications before the
+   response, then `session/prompt` works on the loaded session.
+   `TestSessionLoadReplaysToolUseAsText` — historical tool use as plain
+   text, never re-announced as tool_call updates.
+4. `TestSessionLoadNotFound` — `-32002`.
+5. `TestSessionResumeNoHistoryReplay` — zero updates before the
+   response. `TestSessionResumeNotFound` — `-32002`.
+6. `TestSessionListAllProjectsAndScoped` — multi-project fixture,
+   unscoped returns both, cwd-scoped returns one, titles derived.
+   `TestSessionListEmptyConfigDir` / `TestSessionListCursorIgnored` —
+   empty non-error list; cursor ignored.
+7. `TestSessionSetMode` — `SetPermissionMode` observed on the fake-CLI
+   control wire (mode file), `current_mode_update` notification, empty
+   success response.
+8. `TestSessionSetModeUnknownMode` — `invalid_params`.
+9. `TestSessionSetModeUnknownSession` — `-32002`.
