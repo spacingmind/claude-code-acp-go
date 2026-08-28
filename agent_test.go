@@ -684,6 +684,47 @@ func TestRequestIDRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRequestIDGoString(t *testing.T) {
+	var id RequestID
+	if err := json.Unmarshal([]byte(`42`), &id); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := id.GoString(); got != "42" {
+		t.Errorf("GoString() = %q, want %q", got, "42")
+	}
+}
+
+func TestRequestErrorError(t *testing.T) {
+	e := &RequestError{Code: CodeInvalidParams, Message: "bad params"}
+	if got := e.Error(); got != "bad params" {
+		t.Errorf("Error() = %q, want %q", got, "bad params")
+	}
+}
+
+func TestAgentSessions(t *testing.T) {
+	h := newACPHarness(t, fakeCLIOptions(t, "simple"))
+
+	if got := h.agent.Sessions(); len(got) != 0 {
+		t.Fatalf("Sessions() before any session/new = %v, want empty", got)
+	}
+
+	resp, err := h.call(1, MethodNewSession, NewSessionRequest{CWD: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var ns NewSessionResponse
+	if err := json.Unmarshal(resp.Result, &ns); err != nil {
+		t.Fatal(err)
+	}
+
+	got := h.agent.Sessions()
+	if len(got) != 1 || got[0] != ns.SessionID {
+		t.Errorf("Sessions() = %v, want [%s]", got, ns.SessionID)
+	}
+}
+
 func TestContentBlockRejectsNonText(t *testing.T) {
 	var c ContentBlock
 

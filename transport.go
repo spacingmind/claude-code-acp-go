@@ -16,6 +16,9 @@ const maxLineBytes = 1024 * 1024
 // jsonrpcVersion is the JSON-RPC 2.0 envelope discriminator.
 const jsonrpcVersion = "2.0"
 
+// errShutdown is returned by outbound writes after Shutdown.
+var errShutdown = errors.New("acp: connection is shut down")
+
 // RequestHandler handles an inbound JSON-RPC request. It returns the result
 // to marshal into the response, or an error to send as a JSON-RPC error.
 type RequestHandler func(ctx context.Context, params json.RawMessage) (any, error)
@@ -41,8 +44,9 @@ type Connection struct {
 	requests      map[string]RequestHandler
 	notifications map[string]NotificationHandler
 
-	done chan struct{}
-	once sync.Once
+	done     chan struct{}
+	once     sync.Once
+	shutdown chan struct{}
 }
 
 // NewConnection constructs a Connection and starts its single reader
@@ -56,6 +60,7 @@ func NewConnection(r io.Reader, w io.Writer) *Connection {
 		requests:      make(map[string]RequestHandler),
 		notifications: make(map[string]NotificationHandler),
 		done:          make(chan struct{}),
+		shutdown:      make(chan struct{}),
 	}
 	go c.readLoop()
 
@@ -188,6 +193,12 @@ func (c *Connection) failAllPending(err error) {
 }
 
 func (c *Connection) writeLine(v any) error {
+	select {
+	case <-c.shutdown:
+		return errShutdown
+	default:
+	}
+
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -195,6 +206,12 @@ func (c *Connection) writeLine(v any) error {
 
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+
+	select {
+	case <-c.shutdown:
+		return errShutdown
+	default:
+	}
 
 	_, err = fmt.Fprintf(c.w, "%s\n", data)
 
@@ -216,7 +233,7 @@ func (c *Connection) RegisterRequest(method string, h RequestHandler) {
 	c.requests[method] = h
 }
 
-// RegisterNotification registers a handler for an inbound notification method.
+// RegisterNotification registers a handler for an inbound notification.
 func (c *Connection) RegisterNotification(method string, h NotificationHandler) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -280,5 +297,8 @@ func (c *Connection) Call(ctx context.Context, method string, params any) (json.
 // Shutdown stops the connection's outbound writes. The reader goroutine
 // exits on its own when the underlying reader closes.
 func (c *Connection) Shutdown() {
-	c.once.Do(func() {})
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
+	c.once.Do(func() { close(c.shutdown) })
 }
