@@ -1,2 +1,2 @@
-github.com/spacingmind/claude-agent-sdk-go v0.0.0-20260827175331-b1a9cdac9f6c h1:6oxJR89ruUczBM0KgrlFvp/y8sG3efvoTTpLpAadBxQ=
-github.com/spacingmind/claude-agent-sdk-go v0.0.0-20260827175331-b1a9cdac9f6c/go.mod h1:oTWrb+TrlUivBXIRAiF2QOSZpVhh2iHckzPFiorTcQs=
+github.com/spacingmind/claude-agent-sdk-go v0.2.1-0.20260828042500-7f5afd91b92d h1:kOrbRjVN3Ima/ADF+r2+imtJWV4BN9ekAkEdJEZMHww=
+github.com/spacingmind/claude-agent-sdk-go v0.2.1-0.20260828042500-7f5afd91b92d/go.mod h1:oTWrb+TrlUivBXIRAiF2QOSZpVhh2iHckzPFiorTcQs=

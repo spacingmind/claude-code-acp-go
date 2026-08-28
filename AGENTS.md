@@ -38,6 +38,35 @@ Scenarios, plus Decisions/Progress/Validation sections. Move to
 shape or ACP wire-protocol behavior and isn't already decided, stop and
 ask rather than deciding unilaterally.
 
+## Branching & release workflow
+
+- `main` is release-only. Do not commit or push directly to `main`.
+- `develop` is the integration branch. Feature/fix work happens on
+  short-lived branches off `develop`, merged back via PR.
+- Releasing means opening a PR from `develop` into `main`. Merging that PR
+  triggers everything downstream:
+  1. `.github/workflows/release-please.yml` (on push to `main`) runs
+     [release-please](https://github.com/googleapis/release-please),
+     which reads Conventional Commits since the last release and either
+     opens/updates a `chore(main): release X.Y.Z` PR (version bump +
+     `CHANGELOG.md`), or — if that release PR is what just got merged —
+     creates the `vX.Y.Z` git tag directly.
+  2. Pushing that tag triggers `.github/workflows/release.yml`, which runs
+     `goreleaser` to build the actual GitHub Release (changelog grouping,
+     `pkg.go.dev` links). `release-please` also creates a plain release
+     for the tag, but `goreleaser`'s `release.mode: replace` overwrites it
+     with the nicer-formatted one — deliberately NOT using
+     `skip-github-release`, since that flag breaks release-please's own
+     tag-tracking (see `googleapis/release-please#1561`).
+- **Commit messages merged into `main` must follow [Conventional
+  Commits](https://www.conventionalcommits.org/)** (`feat:`, `fix:`,
+  `feat!:`/`BREAKING CHANGE:` footer for breaking changes, `chore:`/
+  `docs:`/`ci:`/`test:` for everything release-please should exclude from
+  the changelog) — release-please cannot determine the correct version
+  bump or changelog entry without this. This matters most for the PR
+  title/squash-commit message that actually lands on `main`, not
+  necessarily every commit on the feature branch.
+
 ## Key decisions already made
 
 - **No third-party ACP library dependency** (explicitly chosen over

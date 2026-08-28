@@ -1,0 +1,20 @@
+# Enforces Conventional Commits-style PR titles. PRs are squash-merged, so
+# the PR title becomes the commit message that lands on the target branch
+# -- release-please depends on that message to compute version bumps and
+# changelog entries (see AGENTS.md's "Branching & release workflow").
+name: pr-title-lint
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  lint-pr-title:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
