@@ -1,0 +1,38 @@
+# Runs on every push to `main` -- which, under this repo's branching model,
+# only happens when a `develop` -> `main` release PR is merged (feature
+# work lands on `develop` via PR first; `main` is release-only).
+#
+# release-please inspects Conventional Commits (feat:/fix:/BREAKING CHANGE)
+# accumulated since the last release, and either:
+#   - opens/updates a "chore(main): release X.Y.Z" PR containing the
+#     version bump + CHANGELOG.md, if there's nothing to release yet, or
+#   - once that release PR is itself merged, creates the vX.Y.Z git tag
+#     and a (plain) GitHub Release.
+#
+# Deliberately NOT using skip-github-release: that flag breaks
+# release-please's own tag-tracking (a known upstream issue -- it gets
+# permanently stuck reporting "untagged, merged release PRs outstanding"
+# after the first release, see googleapis/release-please#1561 and
+# googleapis/release-please-action#1034). Instead, we let release-please
+# create its own release normally, and rely on release.yml's goreleaser
+# step (release.mode: replace) to overwrite it with our nicer-formatted
+# one once the vX.Y.Z tag lands -- goreleaser's replace mode exists
+# specifically for "another tool already made a release for this tag."
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@8b8fd2cc23b2e18957157a9d923d75aa0c6f6ad5 # v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
