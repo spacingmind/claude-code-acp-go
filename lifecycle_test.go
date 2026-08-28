@@ -146,6 +146,32 @@ func TestNewSessionModes(t *testing.T) {
 	}
 }
 
+func TestSessionLoadRejectsMalformedSessionID(t *testing.T) {
+	h := newACPHarness(t, nil)
+
+	resp, err := h.call(1, MethodLoadSession, LoadSessionRequest{SessionID: "../../etc/passwd", CWD: "/tmp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resp.Error == nil || resp.Error.Code != CodeInvalidParams {
+		t.Fatalf("want invalid_params, got %+v", resp.Error)
+	}
+}
+
+func TestSessionResumeRejectsMalformedSessionID(t *testing.T) {
+	h := newACPHarness(t, nil)
+
+	resp, err := h.call(1, MethodResumeSession, ResumeSessionRequest{SessionID: "../../etc/passwd", CWD: "/tmp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resp.Error == nil || resp.Error.Code != CodeInvalidParams {
+		t.Fatalf("want invalid_params, got %+v", resp.Error)
+	}
+}
+
 // --- B. session/load ---
 
 func TestSessionLoadReplaysHistory(t *testing.T) {

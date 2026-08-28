@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -325,6 +326,14 @@ func envMap(kv []string) map[string]string {
 	return m
 }
 
+// sessionIDRe matches the RFC 4122 v4 UUID shape newSessionID generates
+// and claude-agent-sdk-go's session store requires. Session IDs on
+// session/load and session/resume come from the ACP client (an external
+// editor process) and are rejected here before ever reaching a
+// filesystem path, rather than relying only on the SDK's own internal
+// validation as the sole defense.
+var sessionIDRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
 func newSessionID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -471,8 +480,8 @@ func (a *Agent) handleLoadSession(_ context.Context, params json.RawMessage) (an
 		return nil, &RequestError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid session/load params: %v", err)}
 	}
 
-	if req.SessionID == "" {
-		return nil, &RequestError{Code: CodeInvalidParams, Message: "session/load: sessionId is required"}
+	if !sessionIDRe.MatchString(req.SessionID) {
+		return nil, &RequestError{Code: CodeInvalidParams, Message: "session/load: sessionId is required and must be a UUID"}
 	}
 
 	if len(req.McpServers) > 0 {
@@ -510,8 +519,8 @@ func (a *Agent) handleResumeSession(_ context.Context, params json.RawMessage) (
 		return nil, &RequestError{Code: CodeInvalidParams, Message: fmt.Sprintf("invalid session/resume params: %v", err)}
 	}
 
-	if req.SessionID == "" {
-		return nil, &RequestError{Code: CodeInvalidParams, Message: "session/resume: sessionId is required"}
+	if !sessionIDRe.MatchString(req.SessionID) {
+		return nil, &RequestError{Code: CodeInvalidParams, Message: "session/resume: sessionId is required and must be a UUID"}
 	}
 
 	if len(req.McpServers) > 0 {
