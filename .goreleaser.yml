@@ -18,11 +18,15 @@ changelog:
   # claude-agent-sdk-go's first published release notes.
   format: "{{ .SHA }}: {{ .Message }}"
   filters:
+    # Same scope-tolerant pattern as the Features/Bug fixes groups below --
+    # a plain '^chore:' regex doesn't match 'chore(deps): ...', so
+    # dependabot bumps and other scoped chore/ci/docs/test commits were
+    # slipping through into the changelog instead of being excluded.
     exclude:
-      - '^docs:'
-      - '^test:'
-      - '^chore:'
-      - '^ci:'
+      - "^.*docs[(\\w)]*:+.*$"
+      - "^.*test[(\\w)]*:+.*$"
+      - "^.*chore[(\\w)]*:+.*$"
+      - "^.*ci[(\\w)]*:+.*$"
       - Merge pull request
       - Merge branch
   groups:
