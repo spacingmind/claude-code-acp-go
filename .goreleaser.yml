@@ -1,0 +1,57 @@
+version: 1
+project_name: claude-code-acp-go
+before:
+  hooks:
+    - go mod tidy
+builds:
+  - skip: true
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+changelog:
+  sort: asc
+  use: github
+  # Explicit format so a commit's raw git author name/email is never
+  # shown, only the commit message -- without this, goreleaser falls back
+  # to including "(Author Name <author@email>)" for any commit it can't
+  # resolve to a GitHub username (e.g. one pushed directly rather than
+  # merged via PR), which leaked a real email address in
+  # claude-agent-sdk-go's first published release notes.
+  format: "{{ .SHA }}: {{ .Message }}"
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+      - Merge pull request
+      - Merge branch
+  groups:
+    - title: Features
+      regexp: "^.*feat[(\\w)]*:+.*$"
+      order: 0
+    - title: 'Bug fixes'
+      regexp: "^.*fix[(\\w)]*:+.*$"
+      order: 1
+    - title: Others
+      order: 999
+release:
+  github:
+    owner: spacingmind
+    name: claude-code-acp-go
+  prerelease: auto
+  mode: replace
+  header: |
+    ## claude-code-acp-go {{ .Tag }}
+
+    ```bash
+    go install github.com/spacingmind/claude-code-acp-go/cmd/claude-code-acp@{{ .Tag }}
+    ```
+
+    📦 **[View on pkg.go.dev](https://pkg.go.dev/github.com/spacingmind/claude-code-acp-go@{{ .Tag }})**
+  footer: |
+    **Full Changelog**: https://github.com/spacingmind/claude-code-acp-go/compare/{{ .PreviousTag }}...{{ .Tag }}
+  extra_files:
+    - glob: ./README.md
+    - glob: ./LICENSE
+announce:
+  skip: true
